@@ -1,18 +1,46 @@
-# Ignore env files (case-sensitive folders)
+# =========================
+# ENV FILES
+# =========================
 .env
 .env.*
 Backend/.env
 Frontend/.env
 
-# Ignore node modules
+# =========================
+# NODE
+# =========================
 node_modules/
+dist/
+build/
 
-# Python
-__pycache__/
+# =========================
+# PYTHON
+# =========================
 venv/
-
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
 
-# Logs
+# =========================
+# UPLOADS (DO NOT DEPLOY)
+# =========================
+Backend/uploads/
+Backend/vector_store/
+
+# =========================
+# LOGS
+# =========================
 *.log
+
+# =========================
+# OS FILES
+# =========================
+.DS_Store
+Thumbs.db
+
+# =========================
+# IDE
+# =========================
+.vscode/
+.idea/

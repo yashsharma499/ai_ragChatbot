@@ -1,40 +1,22 @@
-import requests
-import os
 from datetime import datetime
 from bson import ObjectId
+from groq import Groq
+from sentence_transformers import SentenceTransformer
 import app.extensions as extensions
 from app.config import Config
 
 
 class EmbeddingService:
     def __init__(self):
-        self.embed_model = os.getenv("OLLAMA_EMBED_MODEL")
-        self.chat_model = os.getenv("OLLAMA_CHAT_MODEL")
+        # Local embedding model
+        self.embed_model = SentenceTransformer(Config.EMBED_MODEL)
 
-        if not self.embed_model or not self.chat_model:
-            raise RuntimeError("OLLAMA models are not configured in environment variables")
+        # Groq LLM
+        self.groq_client = Groq(api_key=Config.GROQ_API_KEY)
+        self.chat_model = Config.GROQ_MODEL
 
-   
     def embed_text(self, text: str, user_id=None):
-        try:
-            response = requests.post(
-                 f"{Config.OLLAMA_BASE_URL}/api/embeddings",
-                json={
-                    "model": self.embed_model,
-                    "prompt": text
-                },
-                timeout=30
-            )
-            response.raise_for_status()
-        except requests.RequestException as e:
-            raise RuntimeError(f"Ollama embedding error: {str(e)}")
-
-        data = response.json()
-
-        if "embedding" not in data:
-            raise RuntimeError(f"Invalid embedding response: {data}")
-
-        embedding = data["embedding"]
+        embedding = self.embed_model.encode(text).tolist()
 
         token_count = len(text.split())
 
@@ -43,33 +25,23 @@ class EmbeddingService:
                 "userId": ObjectId(user_id),
                 "type": "embedding",
                 "tokens": token_count,
-                "model": self.embed_model,
+                "model": Config.EMBED_MODEL,
                 "createdAt": datetime.utcnow()
             })
 
         return embedding
 
- 
     def generate_answer(self, prompt: str, user_id=None):
-        try:
-            response = requests.post(
-               f"{Config.OLLAMA_BASE_URL}/api/generate",
-                json={
-                    "model": self.chat_model,
-                    "prompt": prompt,
-                    "stream": False
-                },
-                timeout=60
-            )
-            response.raise_for_status()
-        except requests.RequestException as e:
-            raise RuntimeError(f"Ollama generation error: {str(e)}")
+        completion = self.groq_client.chat.completions.create(
+            model=self.chat_model,
+            messages=[
+                {"role": "system", "content": "You are a helpful AI assistant."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.3,
+        )
 
-        data = response.json()
-
-        answer = data.get("response")
-        if answer is None:
-            raise RuntimeError(f"Invalid generation response: {data}")
+        answer = completion.choices[0].message.content
 
         token_count = len(prompt.split()) + len(answer.split())
 

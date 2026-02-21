@@ -1,31 +1,18 @@
-import os
-from pinecone import Pinecone, ServerlessSpec
+from pinecone import Pinecone
+from app.config import Config
 from app.services.embedding_service import EmbeddingService
 
 
 class VectorService:
     def __init__(self):
+        # Initialize embedding service (MiniLM local)
         self.embedding_service = EmbeddingService()
 
-        self.pc = Pinecone(
-            api_key=os.getenv("PINECONE_API_KEY")
-        )
+        # Initialize Pinecone
+        self.pc = Pinecone(api_key=Config.PINECONE_API_KEY)
 
-        self.index_name = os.getenv("PINECONE_INDEX_NAME")
-        self.dimension = int(os.getenv("PINECONE_DIMENSION"))
-
-        if self.index_name not in self.pc.list_indexes().names():
-            self.pc.create_index(
-                name=self.index_name,
-                dimension=self.dimension,
-                metric="cosine",
-                spec=ServerlessSpec(
-                    cloud="aws",
-                    region="us-east-1"
-                )
-            )
-
-        self.index = self.pc.Index(self.index_name)
+        # Connect to index
+        self.index = self.pc.Index(Config.PINECONE_INDEX_NAME)
 
     def add_text(
         self,
@@ -67,14 +54,23 @@ class VectorService:
             user_id=user_id
         )
 
-        filter_query = {
-            "userId": str(user_id),
-            "documentId": str(document_id)
-        }
-
-        return self.index.query(
+        results = self.index.query(
             vector=query_embedding,
             top_k=top_k,
             include_metadata=True,
-            filter=filter_query
+            filter={
+                "userId": {"$eq": str(user_id)},
+                "documentId": {"$eq": str(document_id)}
+            }
         )
+
+        formatted_results = []
+
+        for match in results.matches:
+            formatted_results.append({
+                "id": match.id,
+                "metadata": match.metadata,
+                "score": match.score
+            })
+
+        return formatted_results

@@ -14,78 +14,75 @@ class DocumentService:
         self.embedding_service = EmbeddingService()
         self.vector_service = VectorService()
 
-        # MongoDB collections
-        self.documents_collection = extensions.db.documents
-        self.chunks_collection = extensions.db.documents_chunk
+    # 👇 IMPORTANT: accept app as first argument
+    def ingest_document(self, app, document_id: str, file_path: str, user_id: str):
 
-    def ingest_document(self, document_id: str, file_path: str, user_id: str):
-        """
-        Full document ingestion pipeline (USER-SCOPED)
-        """
-        print("\n Starting document ingestion")
+        # 👇 use real app context
+        with app.app_context():
 
-        if not os.path.exists(file_path):
-            raise FileNotFoundError("Document file does not exist")
+            print("\nStarting document ingestion")
 
-        filename = os.path.basename(file_path)
+            if not os.path.exists(file_path):
+                raise FileNotFoundError("Document file does not exist")
 
-        text = load_text_from_file(file_path)
-        if not text.strip():
-            raise ValueError("Empty document text")
+            filename = os.path.basename(file_path)
+            doc_object_id = ObjectId(document_id)
 
-        print(f"Extracted text length: {len(text)} characters")
+            documents_collection = extensions.db.documents
+            chunks_collection = extensions.db.documents_chunk
 
-        chunks = chunk_text(text)
-        print(f"Created {len(chunks)} chunks")
+            text = load_text_from_file(file_path)
 
-        doc_object_id = ObjectId(document_id)
-        
+            if not text.strip():
+                raise ValueError("Empty document text")
 
-        
+            print(f"Extracted text length: {len(text)} characters")
 
-        print(f"Document saved (id={document_id})")
+            chunks = chunk_text(text)
+            print(f"Created {len(chunks)} chunks")
 
-        for index, chunk_text_data in enumerate(chunks):
-            chunk_id = f"{document_id}_{index}"
+            for index, chunk_text_data in enumerate(chunks):
+                chunk_id = f"{document_id}_{index}"
 
-            self.chunks_collection.insert_one({
-                "userId": ObjectId(user_id),
-                "documentId": doc_object_id,
-                "chunkIndex": index,
-                "text": chunk_text_data,
-                "vectorId": chunk_id,
-                "createdAt": datetime.utcnow()
-            })
-
-            self.vector_service.add_text(
-                text=chunk_text_data,
-                vector_id=chunk_id,
-                user_id=user_id,
-                metadata={
-                    "documentId": str(document_id),
+                chunks_collection.insert_one({
+                    "userId": ObjectId(user_id),
+                    "documentId": doc_object_id,
                     "chunkIndex": index,
-                    "filename": filename
+                    "text": chunk_text_data,
+                    "vectorId": chunk_id,
+                    "createdAt": datetime.utcnow()
+                })
+
+                self.vector_service.add_text(
+                    text=chunk_text_data,
+                    vector_id=chunk_id,
+                    user_id=user_id,
+                    metadata={
+                        "documentId": str(document_id),
+                        "chunkIndex": index,
+                        "filename": filename
+                    }
+                )
+
+                if (index + 1) % 5 == 0 or index == len(chunks) - 1:
+                    print(f"Processed {index + 1}/{len(chunks)} chunks")
+
+            result = documents_collection.update_one(
+                {"_id": doc_object_id},
+                {
+                    "$set": {
+                        "status": "processed",
+                        "totalChunks": len(chunks)
+                    }
                 }
             )
 
-            if (index + 1) % 5 == 0 or index == len(chunks) - 1:
-                print(f"Processed {index + 1}/{len(chunks)} chunks")
+            print("Modified count:", result.modified_count)
+            print("Document ingestion completed\n")
 
-        self.documents_collection.update_one(
-            {"_id": doc_object_id},
-            {
-             "$set": {
-            "status": "processed",
-            "totalChunks": len(chunks)
+            return {
+                "documentId": str(document_id),
+                "filename": filename,
+                "totalChunks": len(chunks),
+                "status": "processed"
             }
-            }
-)        
-
-        print("Document ingestion completed\n")
-
-        return {
-            "documentId": str(document_id),
-            "filename": filename,
-            "totalChunks": len(chunks),
-            "status": "processed"
-        }

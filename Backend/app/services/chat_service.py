@@ -17,12 +17,9 @@ class ChatService:
         document_id: str,
         top_k: int = 5
     ):
-        print("\nNew question received")
-
         if extensions.db is None:
             raise RuntimeError("MongoDB not initialized")
 
-        print("Searching relevant chunks in Pinecone")
         results = self.vector_service.search(
             query=question,
             user_id=user_id,
@@ -30,12 +27,12 @@ class ChatService:
             top_k=top_k
         )
 
-        if not results.matches:
+        if not results:
             answer = "No relevant information found for this document."
         else:
             chunk_texts = []
 
-            for match in results.matches:
+            for match in results:
                 vector_id = match["id"]
 
                 chunk = extensions.db.documents_chunk.find_one(
@@ -55,41 +52,28 @@ class ChatService:
             else:
                 context = "\n\n".join(chunk_texts)
 
-                print("Asking LLM with retrieved context")
-
                 prompt = f"""
 You are a smart, friendly AI assistant like ChatGPT.
 
 Follow these rules carefully:
 
-1. If the user's question is related to the provided document context
-   (such as names, skills, experience, projects, explanations, time/space complexity,
-   links, or any detail from the document),
-   then answer STRICTLY using ONLY the document context.
+1. If the user's question is related to the provided document context,
+   then answer strictly using only the document context.
 
-2. If the question is about the document but the answer is NOT present,
+2. If the question is about the document but the answer is not present,
    reply exactly with:
    "Not found in document"
 
-3. If the question is NOT related to the document,
+3. If the question is not related to the document,
    answer normally using your general knowledge.
-   This includes:
-   - General awareness
-   - Mathematics
-   - DSA & algorithms
-   - Programming concepts
-   - Logical reasoning
 
-4. If the user greets or chats casually
-   (e.g. "hi", "hello", "how are you"),
+4. If the user greets or chats casually,
    reply politely and conversationally.
 
-5. Do NOT make up document-related facts.
+5. Do not make up document-related facts.
 
-6. Keep answers clear, well-structured, and easy to understand.
-   Use bullet points or step-by-step explanations when helpful.
+6. Keep answers clear and structured.
 
-----------------------------------
 Document Context:
 {context}
 
@@ -101,7 +85,7 @@ Answer:
 
                 answer = self.embedding_service.generate_answer(
                     prompt,
-                    ObjectId(user_id)   # 🔥 TOKEN USAGE TRACKED
+                    ObjectId(user_id)
                 )
 
         extensions.db.chat_messages.insert_one({
@@ -111,9 +95,6 @@ Answer:
             "answer": answer,
             "createdAt": datetime.utcnow()
         })
-
-        print("Chat saved to database")
-        print("Answer generated")
 
         return {
             "answer": answer
