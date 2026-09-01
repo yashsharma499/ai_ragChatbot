@@ -1,43 +1,63 @@
 from functools import wraps
-from flask import request, jsonify
+
 import jwt
+from flask import request
+
 from app.config import Config
+from app.utils.responses import fail
+
+
+def _extract_token():
+    auth_header = request.headers.get("Authorization", "")
+
+    if not auth_header:
+        return None, "Authorization header missing"
+
+    parts = auth_header.split()
+    if len(parts) != 2 or parts[0].lower() != "bearer":
+        return None, "Authorization header must be 'Bearer <token>'"
+
+    return parts[1], None
+
 
 def jwt_required(role=None):
+    """
+    Verifies the bearer token and attaches `request.user`.
+
+    `role="admin"` additionally requires the admin role. Distinguishes an
+    invalid/expired token (401, client should log in again) from a valid token
+    without sufficient privileges (403).
+    """
+
     def decorator(fn):
         @wraps(fn)
         def wrapper(*args, **kwargs):
-            auth_header = request.headers.get("Authorization")
-
-            if not auth_header:
-                return jsonify({"error": "Authorization header missing"}), 401
+            token, header_error = _extract_token()
+            if header_error:
+                return fail(header_error, 401, code="unauthorized")
 
             try:
-                token = auth_header.split(" ")[1]  # Bearer <token>
-                payload = jwt.decode(
-                token,
-                Config.JWT_SECRET,
-                algorithms=["HS256"]
-                )
-
-                request.user = {
-                "userId": payload["userId"],
-                "email": payload["email"],
-                "role": payload.get("role", "user")
-                }
-
-                if role and request.user["role"] != role:
-                    return jsonify(
-                        {"error": f"{role} access required"}
-                    ), 403
-
-
+                payload = jwt.decode(token, Config.JWT_SECRET, algorithms=["HS256"])
             except jwt.ExpiredSignatureError:
-                return jsonify({"error": "Token expired"}), 401
-            except Exception as e:
-                return jsonify({"error": "Invalid token", "details": str(e)}), 401
+                return fail("Session expired. Please sign in again.", 401, code="token_expired")
+            except jwt.InvalidTokenError:
+                return fail("Invalid authentication token", 401, code="invalid_token")
+
+            user_id = payload.get("userId")
+            if not user_id:
+                return fail("Invalid authentication token", 401, code="invalid_token")
+
+            request.user = {
+                "userId": user_id,
+                "email": payload.get("email"),
+                "role": payload.get("role", "user"),
+            }
+
+            if role and request.user["role"] != role:
+                return fail(f"{role.capitalize()} access required", 403, code="forbidden")
 
             return fn(*args, **kwargs)
 
         return wrapper
+
     return decorator

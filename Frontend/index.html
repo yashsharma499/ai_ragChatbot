@@ -2,12 +2,33 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>frontend</title>
+    <meta name="theme-color" content="#020617" />
+    <meta
+      name="description"
+      content="Upload your documents and ask questions about them. Answers are grounded in your own files using retrieval-augmented generation."
+    />
+    <title>Knowledge Assistant — Chat with your documents</title>
+
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+
+    <style>
+      /* Paints the dark ground before the CSS bundle loads, so there is no
+         white flash on first paint. */
+      html,
+      body {
+        margin: 0;
+        background: #020617;
+      }
+    </style>
   </head>
   <body>
     <div id="root"></div>
+    <noscript>
+      <p style="color: #e2e8f0; font-family: system-ui; padding: 2rem">
+        This application requires JavaScript to run.
+      </p>
+    </noscript>
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>

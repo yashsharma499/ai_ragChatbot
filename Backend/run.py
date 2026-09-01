@@ -1,13 +1,25 @@
+import os
+
 from dotenv import load_dotenv
+
 load_dotenv()
-from app.main import create_app
 
+DEBUG = os.getenv("FLASK_DEBUG", "1") == "1"
 
-app = create_app()
+# With the reloader on, Werkzeug runs two processes: a parent that only watches
+# files and a child that actually serves. Only the child should load the
+# embedding model, otherwise it is loaded twice and costs twice the memory.
+IS_RELOADER_WATCHER = DEBUG and os.environ.get("WERKZEUG_RUN_MAIN") != "true"
 
-if __name__ == '__main__' : 
+from app.main import create_app  # noqa: E402  (env must load before config)
+
+app = create_app(warm_embeddings=not IS_RELOADER_WATCHER)
+
+if __name__ == "__main__":
     app.run(
-        host ='0.0.0.0',
-        port = 5000,
-        debug = True
+        host=os.getenv("HOST", "0.0.0.0"),
+        port=int(os.getenv("PORT", 5000)),
+        debug=DEBUG,
+        use_reloader=DEBUG,
+        threaded=True,
     )

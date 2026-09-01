@@ -6,6 +6,11 @@
 Backend/.env
 Frontend/.env
 
+# ...but the templates must be committed
+!.env.example
+!Backend/.env.example
+!Frontend/.env.example
+
 # =========================
 # NODE
 # =========================

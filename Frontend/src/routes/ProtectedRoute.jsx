@@ -1,22 +1,30 @@
-import { Navigate } from "react-router-dom";
-import { useAuth } from "../context/AuthContext";
+import { Navigate, useLocation } from "react-router-dom";
+import { useAuth } from "../context/auth-context";
+import { Spinner } from "../components/ui/States";
 
 export default function ProtectedRoute({ children, role }) {
   const { user, loading } = useAuth();
+  const location = useLocation();
 
-  // ⏳ Wait until auth state is restored
+  // A blank screen while the session is verified looks like a broken app.
   if (loading) {
-    return null; // or a loader
+    return (
+      <div className="flex min-h-screen flex-col items-center justify-center gap-4 bg-[#020617]">
+        <Spinner className="h-8 w-8" label="Restoring your session" />
+        <p className="text-sm font-medium text-slate-500">Restoring your session…</p>
+      </div>
+    );
   }
 
-  // 🔒 Not logged in
   if (!user) {
-    return <Navigate to="/login" replace />;
+    // Remember where they were headed so login can send them back.
+    return <Navigate to="/login" replace state={{ from: location }} />;
   }
 
-  // 🔐 Role-based protection
+  // Sending an admin who lands on /dashboard back to /login was a redirect loop
+  // in the old version; route them to their own home instead.
   if (role && user.role !== role) {
-    return <Navigate to="/login" replace />;
+    return <Navigate to={user.role === "admin" ? "/admin" : "/dashboard"} replace />;
   }
 
   return children;

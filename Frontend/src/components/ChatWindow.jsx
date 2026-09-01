@@ -1,161 +1,254 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+
 import ChatMessage from "./ChatMessage";
+import Icon from "./ui/Icon";
+import { EmptyState } from "./ui/States";
 
-export default function ChatWindow({ messages, onSend , disabled = false,
-  disabledReason = ""}) {
+const MAX_QUESTION_LENGTH = 1000;
+const MIN_TEXTAREA_HEIGHT = 52;
+const MAX_TEXTAREA_HEIGHT = 160;
+
+const STARTERS = [
+  "Summarise this document in five bullet points.",
+  "What are the key findings?",
+  "List any dates, figures or names mentioned.",
+  "What questions does this document leave unanswered?",
+];
+
+export default function ChatWindow({
+  messages = [],
+  onSend,
+  onRetry,
+  onClear,
+  isSending = false,
+  disabled = false,
+  disabledReason = "",
+  title = "AI Assistant",
+  subtitle = null,
+}) {
   const [input, setInput] = useState("");
-  const [isTyping, setIsTyping] = useState(false);
-  const bottomRef = useRef(null);
   const textareaRef = useRef(null);
-  const messagesEndRef = useRef(null);
+  const scrollRef = useRef(null);
+  const endRef = useRef(null);
+  const pinnedToBottom = useRef(true);
 
-  const handleSend = () => {
-    if (disabled) return;  
+  const trimmed = input.trim();
+  const tooLong = trimmed.length > MAX_QUESTION_LENGTH;
+  const canSend = !disabled && !isSending && trimmed.length > 0 && !tooLong;
 
-    if (!input.trim()) return;
-    onSend(input);
+  /* Only auto-scroll when the user is already at the bottom. Forcing it always
+     yanked the view away whenever they scrolled up to re-read an answer. */
+  const handleScroll = () => {
+    const element = scrollRef.current;
+    if (!element) return;
+    const distanceFromBottom =
+      element.scrollHeight - element.scrollTop - element.clientHeight;
+    pinnedToBottom.current = distanceFromBottom < 120;
+  };
+
+  useLayoutEffect(() => {
+    if (pinnedToBottom.current) {
+      endRef.current?.scrollIntoView({ block: "end" });
+    }
+  }, [messages]);
+
+  const resize = () => {
+    const element = textareaRef.current;
+    if (!element) return;
+    element.style.height = "auto";
+    element.style.height = `${Math.min(
+      Math.max(element.scrollHeight, MIN_TEXTAREA_HEIGHT),
+      MAX_TEXTAREA_HEIGHT
+    )}px`;
+  };
+
+  useEffect(resize, [input]);
+
+  const send = (text = input) => {
+    const value = text.trim();
+    if (disabled || isSending || !value || value.length > MAX_QUESTION_LENGTH) return;
+
+    onSend(value);
     setInput("");
-    setIsTyping(true);
-    
-    if (textareaRef.current) {
-      textareaRef.current.style.height = "56px";
-    }
-
-    setTimeout(() => setIsTyping(false), 2000);
+    pinnedToBottom.current = true;
   };
 
-  useEffect(() => {
-    const scrollToBottom = () => {
-      if (messagesEndRef.current) {
-        messagesEndRef.current.scrollIntoView({ behavior: "smooth", block: "end" });
-      }
-    };
-    
-    setTimeout(scrollToBottom, 100);
-  }, [messages, isTyping]);
-
-  const handleKeyPress = (e) => {
-    if (disabled) return; 
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      handleSend();
+  const handleKeyDown = (event) => {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      send();
     }
   };
 
-  const handleInput = (e) => {
-    const target = e.target;
-    target.style.height = "auto"; 
-    const newHeight = Math.min(target.scrollHeight, 128); 
-    target.style.height = `${Math.max(56, newHeight)}px`;
-    setInput(target.value);
-  };
+  const statusLabel = disabled
+    ? disabledReason || "Unavailable"
+    : isSending
+      ? "Thinking…"
+      : "Ready to help";
 
   return (
-    <div className=" scale-97 flex flex-col h-full w-full bg-slate-900/50 backdrop-blur-xl rounded-xl border border-white/5 overflow-hidden relative">
-      
+    <div className="flex h-full min-h-0 w-full flex-col overflow-hidden rounded-2xl border border-white/5 bg-slate-900/50 backdrop-blur-xl">
       {/* Header */}
-      <div className="flex-shrink-0 px-6 py-5 border-b border-white/10 bg-slate-900/40 relative">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-4">
-            <div className="h-12 w-12 bg-gradient-to-br from-purple-500 to-pink-600 rounded-xl flex items-center justify-center shadow-xl shadow-purple-500/20 border border-white/10">
-              <svg className="h-6 w-6 text-white" fill="none" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" viewBox="0 0 24 24" stroke="currentColor">
-                <path d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
-              </svg>
-            </div>
-            <div>
-              <h3 className="text-lg font-bold text-white">AI Assistant</h3>
-              <div className="flex items-center gap-2 mt-1">
-                <span className="relative flex h-2 w-2">
-                  <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${isTyping ? 'bg-purple-400' : 'bg-emerald-400'}`}></span>
-                  <span className={`relative inline-flex rounded-full h-2 w-2 ${isTyping ? 'bg-purple-500' : 'bg-emerald-500'}`}></span>
-                </span>
-                <p className="text-sm text-slate-400 font-medium">
-  {disabled
-    ? "Document is processing…"
-    : isTyping
-      ? "Thinking..."
-      : "Ready to help"}
-</p>
-              </div>
-            </div>
-          </div>
-          <span className="px-3 py-1.5 bg-slate-800/50 text-slate-300 text-sm font-medium rounded-lg border border-slate-700/50">
-            {messages.length} messages
+      <header className="flex flex-shrink-0 items-center justify-between gap-3 border-b border-white/5 bg-slate-900/40 px-5 py-3.5">
+        <div className="flex min-w-0 items-center gap-3">
+          <span className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl border border-white/10 bg-gradient-to-br from-purple-500 to-pink-600 shadow-lg shadow-purple-900/30">
+            <Icon name="spark" className="h-5 w-5 text-white" />
           </span>
-        </div>
-      </div>
+          <div className="min-w-0">
+            <h3 title={title} className="truncate text-sm font-bold text-white">
+              {title}
+            </h3>
 
-      {/* Messages Area */}
-      <div className="flex-1 min-h-0 overflow-y-auto p-6 space-y-8 custom-scrollbar scroll-smooth">
-        {messages.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-full text-center px-6 py-12">
-            <div className="h-24 w-24 bg-slate-800/50 rounded-2xl flex items-center justify-center mb-6 border-2 border-dashed border-slate-700">
-              <svg className="h-12 w-12 text-slate-500" fill="none" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" viewBox="0 0 24 24" stroke="currentColor">
-                <path d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-              </svg>
+            {/* The document's own metadata, when the caller supplies it. Keeping
+                it here avoids a second header stacked above this panel. */}
+            <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] font-medium text-slate-500 [&>span]:whitespace-nowrap">
+              <span className="flex items-center gap-1.5 text-slate-400">
+                <span className="relative flex h-1.5 w-1.5">
+                  <span
+                    className={`absolute inline-flex h-full w-full rounded-full opacity-75 ${
+                      disabled
+                        ? "bg-slate-500"
+                        : isSending
+                          ? "animate-ping bg-purple-400"
+                          : "bg-emerald-400"
+                    }`}
+                  />
+                  <span
+                    className={`relative inline-flex h-1.5 w-1.5 rounded-full ${
+                      disabled
+                        ? "bg-slate-500"
+                        : isSending
+                          ? "bg-purple-500"
+                          : "bg-emerald-500"
+                    }`}
+                  />
+                </span>
+                {statusLabel}
+              </span>
+              {subtitle}
             </div>
-            <h4 className="text-xl font-bold text-white mb-3">Start a Conversation</h4>
-            <p className="text-slate-400 max-w-sm mx-auto leading-relaxed">
-              Ask questions about your document to get instant, AI-powered insights and answers.
-            </p>
           </div>
-        ) : (
-          <>
-            {messages.map((msg, index) => (
-              <ChatMessage key={index} message={msg} index={index} />
-            ))}
-            {isTyping && (
-              <div className="flex justify-start animate-fadeIn pl-2">
-                <div className="bg-slate-800/50 border border-slate-700 rounded-2xl rounded-tl-none p-4 shadow-sm">
-                  <div className="flex gap-2">
-                    <div className="h-2 w-2 bg-purple-400 rounded-full animate-bounce"></div>
-                    <div className="h-2 w-2 bg-purple-400 rounded-full animate-bounce" style={{ animationDelay: "0.15s" }}></div>
-                    <div className="h-2 w-2 bg-purple-400 rounded-full animate-bounce" style={{ animationDelay: "0.3s" }}></div>
-                  </div>
-                </div>
+        </div>
+
+        <div className="flex flex-shrink-0 items-center gap-2">
+          <span className="hidden rounded-lg border border-white/5 bg-white/5 px-2.5 py-1 text-xs font-medium text-slate-400 sm:inline">
+            {messages.length} {messages.length === 1 ? "message" : "messages"}
+          </span>
+
+          {onClear && messages.length > 0 && (
+            <button
+              type="button"
+              onClick={onClear}
+              title="Clear this conversation"
+              className="rounded-lg border border-white/5 bg-white/5 p-1.5 text-slate-400 transition-colors hover:border-rose-500/30 hover:bg-rose-500/10 hover:text-rose-400"
+            >
+              <Icon name="trash" className="h-4 w-4" />
+            </button>
+          )}
+        </div>
+      </header>
+
+      {/* Messages */}
+      <div
+        ref={scrollRef}
+        onScroll={handleScroll}
+        className="custom-scrollbar flex-1 space-y-6 overflow-y-auto p-5"
+      >
+        {messages.length === 0 ? (
+          <div className="flex h-full flex-col items-center justify-center">
+            <EmptyState
+              icon="chat"
+              title="Start a conversation"
+              message={
+                disabled
+                  ? disabledReason
+                  : "Ask anything about this document. Every answer cites the passages it came from."
+              }
+            />
+
+            {!disabled && (
+              <div className="mt-1 flex w-full max-w-lg flex-wrap justify-center gap-2 px-4">
+                {STARTERS.map((starter) => (
+                  <button
+                    key={starter}
+                    type="button"
+                    onClick={() => send(starter)}
+                    className="rounded-full border border-white/10 bg-white/5 px-3.5 py-1.5 text-xs font-medium text-slate-300 transition-all hover:border-indigo-500/40 hover:bg-indigo-500/10 hover:text-white"
+                  >
+                    {starter}
+                  </button>
+                ))}
               </div>
             )}
-          </>
+          </div>
+        ) : (
+          messages.map((message, index) => (
+            <ChatMessage
+              key={message.messageId ?? message._id ?? `${index}-${message.createdAt}`}
+              message={message}
+              onRetry={onRetry}
+            />
+          ))
         )}
-        <div ref={messagesEndRef} className="h-px" />
+        <div ref={endRef} className="h-px" />
       </div>
 
-      {/* Input Area */}
-      <div className="flex-shrink-0 p-6 border-t border-white/10 bg-slate-900/40 backdrop-blur-sm">
-        <div className="relative flex items-end gap-3">
-          <div className="flex-1 relative group">
-            <div className="absolute -inset-0.5 bg-gradient-to-r from-purple-500/20 to-pink-500/20 rounded-xl opacity-0 group-focus-within:opacity-50 transition duration-500 blur-md"></div>
+      {/* Composer */}
+      <div className="flex-shrink-0 border-t border-white/5 bg-slate-900/40 p-4">
+        <div className="flex items-end gap-2.5">
+          <div className="group relative flex-1">
             <textarea
               ref={textareaRef}
-              // ref={textareaRef}
-  placeholder={
-    disabled
-      ? disabledReason || "Document is processing…"
-      : "Type your question here..."
-  }
-  value={input}
-  // onChange={handleInput}
-  // onKeyDown={handleKeyPress}
-  disabled={disabled}
-              // value={input}
-              onChange={handleInput}
-              onKeyDown={handleKeyPress}
+              value={input}
+              onChange={(event) => setInput(event.target.value)}
+              onKeyDown={handleKeyDown}
+              disabled={disabled || isSending}
               rows={1}
-              className="relative w-full px-5 py-4 bg-slate-800/50 border border-slate-700 rounded-xl text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-purple-500/20 focus:border-purple-500 resize-none text-sm shadow-sm transition-all duration-300 custom-scrollbar"
-              style={{ minHeight: "56px", maxHeight: "140px" }}
+              aria-label="Ask a question about this document"
+              placeholder={
+                disabled
+                  ? disabledReason || "Unavailable right now"
+                  : "Ask a question…  (Enter to send, Shift+Enter for a new line)"
+              }
+              className={`custom-scrollbar w-full resize-none rounded-xl border bg-slate-800/60 px-4 py-3.5 text-sm text-white placeholder-slate-500 shadow-sm transition-all focus:outline-none focus:ring-2 disabled:cursor-not-allowed disabled:opacity-60 ${
+                tooLong
+                  ? "border-rose-500/50 focus:border-rose-500 focus:ring-rose-500/20"
+                  : "border-slate-700 focus:border-purple-500 focus:ring-purple-500/20"
+              }`}
+              style={{ minHeight: MIN_TEXTAREA_HEIGHT, maxHeight: MAX_TEXTAREA_HEIGHT }}
             />
+
+            {trimmed.length > MAX_QUESTION_LENGTH * 0.8 && (
+              <span
+                className={`absolute bottom-2 right-3 text-[10px] font-semibold ${
+                  tooLong ? "text-rose-400" : "text-slate-500"
+                }`}
+              >
+                {trimmed.length}/{MAX_QUESTION_LENGTH}
+              </span>
+            )}
           </div>
 
           <button
-            onClick={handleSend}
-            disabled={disabled || !input.trim()}
-            className="h-14 w-14 bg-gradient-to-br from-purple-500 to-pink-600 text-white rounded-xl hover:from-purple-600 hover:to-pink-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center flex-shrink-0 shadow-xl shadow-purple-500/20 hover:shadow-purple-500/30 transition-all duration-300 hover:-translate-y-0.5 active:scale-95"
+            type="button"
+            onClick={() => send()}
+            disabled={!canSend}
+            aria-label="Send question"
+            className="flex h-[52px] w-[52px] flex-shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-purple-500 to-pink-600 text-white shadow-lg shadow-purple-900/30 transition-all hover:from-purple-600 hover:to-pink-700 disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none"
           >
-            <svg className="h-6 w-6" fill="none" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" viewBox="0 0 24 24" stroke="currentColor">
-              <path d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
-            </svg>
+            {isSending ? (
+              <span className="h-5 w-5 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+            ) : (
+              <Icon name="send" className="h-5 w-5" />
+            )}
           </button>
         </div>
+
+        {tooLong && (
+          <p role="alert" className="mt-2 text-xs font-medium text-rose-400">
+            Questions are limited to {MAX_QUESTION_LENGTH} characters.
+          </p>
+        )}
       </div>
     </div>
   );

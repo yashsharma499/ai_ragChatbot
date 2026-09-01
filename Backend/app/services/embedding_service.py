@@ -1,57 +1,197 @@
+import logging
+import threading
 from datetime import datetime
+from typing import List, Optional, Sequence
+
 from bson import ObjectId
-from groq import Groq
-from sentence_transformers import SentenceTransformer
+
 import app.extensions as extensions
 from app.config import Config
 
+logger = logging.getLogger(__name__)
+
+
+class AIServiceUnavailable(RuntimeError):
+    """Raised when an upstream AI dependency is missing or unreachable."""
+
 
 class EmbeddingService:
-    def __init__(self):
-        # Local embedding model
-        self.embed_model = SentenceTransformer(Config.EMBED_MODEL)
+    """
+    Wraps the local MiniLM embedder and the Groq chat model.
 
-        # Groq LLM
-        self.groq_client = Groq(api_key=Config.GROQ_API_KEY)
+    Both are process-wide singletons loaded on first use. The previous version
+    built a fresh SentenceTransformer inside every service constructor, which
+    loaded the same ~90MB model four times per worker and added seconds to boot.
+    """
+
+    _model = None
+    _model_lock = threading.Lock()
+    _groq_client = None
+    _groq_lock = threading.Lock()
+
+    def __init__(self):
         self.chat_model = Config.GROQ_MODEL
 
-    def embed_text(self, text: str, user_id=None):
-        embedding = self.embed_model.encode(text).tolist()
+    # ------------------------------------------------------------------
+    # Lazily-built clients
+    # ------------------------------------------------------------------
+    @classmethod
+    def get_model(cls):
+        if cls._model is None:
+            with cls._model_lock:
+                if cls._model is None:
+                    from sentence_transformers import SentenceTransformer
 
-        token_count = len(text.split())
+                    logger.info("Loading embedding model %s ...", Config.EMBED_MODEL)
+                    cls._model = SentenceTransformer(Config.EMBED_MODEL)
+                    logger.info("Embedding model ready")
+        return cls._model
 
-        if user_id:
-            extensions.db.usage_logs.insert_one({
-                "userId": ObjectId(user_id),
-                "type": "embedding",
-                "tokens": token_count,
-                "model": Config.EMBED_MODEL,
-                "createdAt": datetime.utcnow()
-            })
+    @classmethod
+    def get_groq(cls):
+        if not Config.GROQ_API_KEY:
+            raise AIServiceUnavailable(
+                "The AI service is not configured (GROQ_API_KEY is missing)."
+            )
+        if cls._groq_client is None:
+            with cls._groq_lock:
+                if cls._groq_client is None:
+                    from groq import Groq
 
-        return embedding
+                    cls._groq_client = Groq(api_key=Config.GROQ_API_KEY)
+        return cls._groq_client
 
-    def generate_answer(self, prompt: str, user_id=None):
-        completion = self.groq_client.chat.completions.create(
-            model=self.chat_model,
-            messages=[
-                {"role": "system", "content": "You are a helpful AI assistant."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.3,
+    @classmethod
+    def warmup(cls):
+        """Preloads the embedding model so the first upload is not slow."""
+        try:
+            cls.get_model()
+        except Exception as e:
+            logger.warning("Embedding model warmup failed: %s", e)
+
+    # ------------------------------------------------------------------
+    # Embeddings
+    # ------------------------------------------------------------------
+    def embed_text(self, text: str, user_id=None) -> List[float]:
+        return self.embed_texts([text], user_id=user_id)[0]
+
+    def embed_texts(self, texts: Sequence[str], user_id=None) -> List[List[float]]:
+        """
+        Embeds a batch in one model call. Ingesting a 60-chunk document used to
+        mean 60 separate `encode` calls and 60 usage-log inserts.
+        """
+        if not texts:
+            return []
+
+        model = self.get_model()
+        vectors = model.encode(
+            list(texts),
+            batch_size=Config.EMBED_BATCH_SIZE,
+            show_progress_bar=False,
+            normalize_embeddings=True,
+        )
+        embeddings = [v.tolist() for v in vectors]
+
+        self._log_usage(
+            user_id=user_id,
+            kind="embedding",
+            tokens=sum(len(t.split()) for t in texts),
+            model=Config.EMBED_MODEL,
         )
 
-        answer = completion.choices[0].message.content
+        return embeddings
 
-        token_count = len(prompt.split()) + len(answer.split())
+    # ------------------------------------------------------------------
+    # Generation
+    # ------------------------------------------------------------------
+    def generate_answer(
+        self,
+        prompt: str,
+        user_id=None,
+        system_prompt: Optional[str] = None,
+        temperature: float = 0.2,
+        max_tokens: int = 1024,
+    ) -> str:
+        client = self.get_groq()
 
-        if user_id:
-            extensions.db.usage_logs.insert_one({
-                "userId": ObjectId(user_id),
-                "type": "generation",
-                "tokens": token_count,
-                "model": self.chat_model,
-                "createdAt": datetime.utcnow()
-            })
+        try:
+            completion = client.chat.completions.create(
+                model=self.chat_model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": system_prompt
+                        or "You are a helpful assistant that answers questions about documents.",
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+        except Exception as e:
+            logger.exception("Groq completion failed (model=%s)", self.chat_model)
+            raise AIServiceUnavailable(self._explain_groq_error(e)) from e
+
+        answer = (completion.choices[0].message.content or "").strip()
+
+        # Prefer the provider's real token accounting over a word-count guess.
+        usage = getattr(completion, "usage", None)
+        tokens = getattr(usage, "total_tokens", None)
+        if tokens is None:
+            tokens = len(prompt.split()) + len(answer.split())
+
+        self._log_usage(
+            user_id=user_id,
+            kind="generation",
+            tokens=int(tokens),
+            model=self.chat_model,
+        )
 
         return answer
+
+    def _explain_groq_error(self, error) -> str:
+        """
+        Turns provider failures into something an operator can act on. A
+        retired model previously surfaced as a generic 500 with no clue that
+        GROQ_MODEL was the problem.
+        """
+        status = getattr(error, "status_code", None)
+        detail = str(error).lower()
+
+        if status == 404 or "model_not_found" in detail or "does not exist" in detail:
+            return (
+                f"The configured AI model '{self.chat_model}' is not available. "
+                "Set GROQ_MODEL to a currently served model "
+                "(see https://console.groq.com/docs/models)."
+            )
+        if status == 401 or "invalid api key" in detail:
+            return "The AI service rejected the API key. Check GROQ_API_KEY."
+        if status == 429 or "rate limit" in detail:
+            return "The AI service is rate limited right now. Please try again in a moment."
+
+        return "The AI service is temporarily unavailable. Please try again."
+
+    # ------------------------------------------------------------------
+    # Usage accounting
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _log_usage(user_id, kind: str, tokens: int, model: str):
+        if not user_id or extensions.db is None:
+            return
+        try:
+            extensions.db.usage_logs.insert_one(
+                {
+                    "userId": user_id if isinstance(user_id, ObjectId) else ObjectId(user_id),
+                    "type": kind,
+                    "tokens": int(tokens),
+                    "model": model,
+                    "createdAt": datetime.utcnow(),
+                }
+            )
+        except Exception as e:
+            # Usage accounting must never break the user-facing request.
+            logger.warning("Failed to write usage log: %s", e)
+
+
+# Shared instance used across services.
+embedding_service = EmbeddingService()
