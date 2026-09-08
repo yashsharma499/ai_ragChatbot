@@ -175,18 +175,47 @@ def create_app(warm_embeddings=None):
         one request rather than from a failed upload ten minutes later.
         """
         missing_keys = Config.missing_ai_keys()
-        healthy = extensions.mongo_connected and not missing_keys
+        problems = list(missing_keys)
 
-        return (
-            {
-                "status": "ok" if healthy else "degraded",
-                "service": "AI Knowledge Assistant API",
-                "database": "connected" if extensions.mongo_connected else "disconnected",
-                "ai": "configured" if not missing_keys else "not_configured",
-                "missingConfig": missing_keys,
+        # The embedding backend is the most common misconfiguration on a fresh
+        # deploy: EMBEDDING_BACKEND defaults to "local", and if the optional
+        # torch dependency was not installed the very first upload or question
+        # dies with a 502 while /health still looks perfectly green.
+        embeddings_ready = True
+        embeddings_detail = None
+
+        if Config.uses_local_embeddings():
+            import importlib.util
+
+            if importlib.util.find_spec("sentence_transformers") is None:
+                embeddings_ready = False
+                embeddings_detail = (
+                    "EMBEDDING_BACKEND=local but sentence-transformers is not "
+                    "installed. Set EMBEDDING_BACKEND=pinecone, or install "
+                    "requirements-local.txt."
+                )
+                problems.append("EMBEDDING_BACKEND")
+
+        healthy = extensions.mongo_connected and not problems
+
+        body = {
+            "status": "ok" if healthy else "degraded",
+            "service": "AI Knowledge Assistant API",
+            "database": "connected" if extensions.mongo_connected else "disconnected",
+            "ai": "configured" if not missing_keys else "not_configured",
+            "embeddings": {
+                "backend": Config.EMBEDDING_BACKEND,
+                "dimensions": Config.expected_dimension(),
+                "index": Config.PINECONE_INDEX_NAME,
+                "ready": embeddings_ready,
             },
-            200 if healthy else 503,
-        )
+            "missingConfig": problems,
+        }
+
+        if embeddings_detail:
+            body["embeddings"]["error"] = embeddings_detail
+
+        return body, 200 if healthy else 503
 
     os.makedirs(Config.UPLOAD_FOLDER, exist_ok=True)
 

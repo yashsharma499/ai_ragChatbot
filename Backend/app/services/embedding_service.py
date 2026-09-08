@@ -48,7 +48,18 @@ class EmbeddingService:
         if cls._model is None:
             with cls._model_lock:
                 if cls._model is None:
-                    from sentence_transformers import SentenceTransformer
+                    try:
+                        from sentence_transformers import SentenceTransformer
+                    except ImportError as e:
+                        # Fail immediately with an actionable message. Otherwise a
+                        # deploy that installed only the slim requirements spends
+                        # 30s trying to load a model, gets OOM-killed, and returns
+                        # a bare 502 with nothing to go on.
+                        raise AIServiceUnavailable(
+                            "EMBEDDING_BACKEND is 'local' but sentence-transformers "
+                            "is not installed. Set EMBEDDING_BACKEND=pinecone to use "
+                            "hosted embeddings, or install requirements-local.txt."
+                        ) from e
 
                     logger.info("Loading embedding model %s ...", Config.EMBED_MODEL)
                     cls._model = SentenceTransformer(Config.EMBED_MODEL)
