@@ -52,7 +52,18 @@ function messageFor(error) {
     return "The request timed out. Please try again.";
   }
   if (!error.response) {
-    return "Cannot reach the server. Check that the backend is running.";
+    // A CORS rejection is indistinguishable from an outage here: the browser
+    // blocks the response before axios can see it, so there is no status and
+    // no body either way. Naming both causes stops this reading as "the
+    // server is down" when the server is actually fine but has not been told
+    // to allow this origin.
+    const api = import.meta.env.VITE_API_BASE_URL || "http://localhost:5000";
+    const crossOrigin =
+      typeof window !== "undefined" && !api.startsWith(window.location.origin);
+
+    return crossOrigin
+      ? `Could not reach ${api}. The server may be down, or it may not allow requests from ${window.location.origin} (CORS).`
+      : "Could not reach the server. Check that the backend is running.";
   }
 
   switch (error.response.status) {
