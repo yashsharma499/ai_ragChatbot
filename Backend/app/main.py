@@ -190,13 +190,17 @@ def create_app(warm_embeddings=None):
 
     os.makedirs(Config.UPLOAD_FOLDER, exist_ok=True)
 
-    if warm_embeddings:
+    # Hosted embeddings have nothing to preload; the warmup only matters for
+    # the in-process model.
+    if warm_embeddings and Config.uses_local_embeddings():
         _warm_embedding_model()
 
     logger.info(
-        "App ready | db=%s | ai=%s | cors=%s",
+        "App ready | db=%s | ai=%s | embeddings=%s (%sd) | cors=%s",
         "up" if extensions.mongo_connected else "down",
         "ok" if not Config.missing_ai_keys() else "missing",
+        Config.EMBEDDING_BACKEND,
+        Config.expected_dimension(),
         ",".join(Config.CORS_ORIGINS),
     )
 

@@ -18,27 +18,43 @@ class VectorService:
     """
 
     _index = None
+    _client = None
     _index_lock = threading.Lock()
 
     def __init__(self):
         self.embedding_service = embedding_service
 
     @classmethod
-    def get_index(cls):
-        if not Config.PINECONE_API_KEY or not Config.PINECONE_INDEX_NAME:
+    def get_client(cls):
+        """
+        The Pinecone client itself, shared with EmbeddingService when hosted
+        embeddings are enabled so both use one connection.
+        """
+        if not Config.PINECONE_API_KEY:
             raise AIServiceUnavailable(
-                "Vector search is not configured "
-                "(PINECONE_API_KEY / PINECONE_INDEX_NAME are missing)."
+                "Vector search is not configured (PINECONE_API_KEY is missing)."
+            )
+
+        if cls._client is None:
+            with cls._index_lock:
+                if cls._client is None:
+                    from pinecone import Pinecone
+
+                    cls._client = Pinecone(api_key=Config.PINECONE_API_KEY)
+        return cls._client
+
+    @classmethod
+    def get_index(cls):
+        if not Config.PINECONE_INDEX_NAME:
+            raise AIServiceUnavailable(
+                "Vector search is not configured (PINECONE_INDEX_NAME is missing)."
             )
 
         if cls._index is None:
             with cls._index_lock:
                 if cls._index is None:
-                    from pinecone import Pinecone
-
                     logger.info("Connecting to Pinecone index %s", Config.PINECONE_INDEX_NAME)
-                    pc = Pinecone(api_key=Config.PINECONE_API_KEY)
-                    cls._index = pc.Index(Config.PINECONE_INDEX_NAME)
+                    cls._index = cls.get_client().Index(Config.PINECONE_INDEX_NAME)
         return cls._index
 
     # ------------------------------------------------------------------
@@ -62,7 +78,9 @@ class VectorService:
             return 0
 
         index = self.get_index()
-        embeddings = self.embedding_service.embed_texts(texts, user_id=user_id)
+        embeddings = self.embedding_service.embed_texts(
+            texts, user_id=user_id, input_type="passage"
+        )
         chunk_indexes = list(chunk_indexes or range(len(texts)))
 
         vectors = []
@@ -117,7 +135,9 @@ class VectorService:
         top_k = top_k or Config.RAG_TOP_K
         min_score = Config.RAG_MIN_SCORE if min_score is None else min_score
 
-        query_embedding = self.embedding_service.embed_text(query, user_id=user_id)
+        query_embedding = self.embedding_service.embed_text(
+            query, user_id=user_id, input_type="query"
+        )
 
         results = index.query(
             vector=query_embedding,

@@ -17,11 +17,19 @@ class AIServiceUnavailable(RuntimeError):
 
 class EmbeddingService:
     """
-    Wraps the local MiniLM embedder and the Groq chat model.
+    Produces embeddings and generates answers.
 
-    Both are process-wide singletons loaded on first use. The previous version
-    built a fresh SentenceTransformer inside every service constructor, which
-    loaded the same ~90MB model four times per worker and added seconds to boot.
+    Embeddings come from one of two interchangeable backends, chosen by
+    Config.EMBEDDING_BACKEND:
+
+      local     sentence-transformers in-process. No API key, works offline,
+                but torch costs ~500MB of RSS - too much for a 512MB free host.
+      pinecone  Pinecone's hosted embedding API, reusing the Pinecone key.
+                No torch, so the process stays around 80MB.
+
+    Clients are process-wide singletons built on first use. The original code
+    constructed a fresh SentenceTransformer inside every service's __init__,
+    loading the same model four times per worker.
     """
 
     _model = None
@@ -72,32 +80,77 @@ class EmbeddingService:
     # ------------------------------------------------------------------
     # Embeddings
     # ------------------------------------------------------------------
-    def embed_text(self, text: str, user_id=None) -> List[float]:
-        return self.embed_texts([text], user_id=user_id)[0]
+    def embed_text(self, text: str, user_id=None, input_type: str = "query") -> List[float]:
+        """Embeds a single string. Defaults to `query`, the search-side usage."""
+        return self.embed_texts([text], user_id=user_id, input_type=input_type)[0]
 
-    def embed_texts(self, texts: Sequence[str], user_id=None) -> List[List[float]]:
+    def embed_texts(
+        self,
+        texts: Sequence[str],
+        user_id=None,
+        input_type: str = "passage",
+    ) -> List[List[float]]:
         """
-        Embeds a batch in one model call. Ingesting a 60-chunk document used to
-        mean 60 separate `encode` calls and 60 usage-log inserts.
+        Embeds a batch in one call.
+
+        `input_type` is "passage" for document chunks and "query" for a user's
+        question. Retrieval models are trained asymmetrically, so labelling the
+        two sides correctly measurably improves matching. It is ignored by the
+        local backend, which has no such distinction.
         """
         if not texts:
             return []
 
-        model = self.get_model()
-        vectors = model.encode(
-            list(texts),
-            batch_size=Config.EMBED_BATCH_SIZE,
-            show_progress_bar=False,
-            normalize_embeddings=True,
-        )
-        embeddings = [v.tolist() for v in vectors]
+        texts = list(texts)
+
+        if Config.uses_local_embeddings():
+            embeddings = self._embed_local(texts)
+            model_name = Config.EMBED_MODEL
+        else:
+            embeddings = self._embed_pinecone(texts, input_type)
+            model_name = Config.PINECONE_EMBED_MODEL
 
         self._log_usage(
             user_id=user_id,
             kind="embedding",
             tokens=sum(len(t.split()) for t in texts),
-            model=Config.EMBED_MODEL,
+            model=model_name,
         )
+
+        return embeddings
+
+    def _embed_local(self, texts: List[str]) -> List[List[float]]:
+        vectors = self.get_model().encode(
+            texts,
+            batch_size=Config.EMBED_BATCH_SIZE,
+            show_progress_bar=False,
+            normalize_embeddings=True,
+        )
+        return [v.tolist() for v in vectors]
+
+    def _embed_pinecone(self, texts: List[str], input_type: str) -> List[List[float]]:
+        from app.services.vector_service import VectorService
+
+        client = VectorService.get_client()
+        batch = max(1, min(Config.PINECONE_EMBED_BATCH, 96))
+        embeddings: List[List[float]] = []
+
+        try:
+            # Pinecone rejects requests above 96 inputs, so chunk regardless of
+            # how many passages a document produced.
+            for start in range(0, len(texts), batch):
+                window = texts[start : start + batch]
+                result = client.inference.embed(
+                    model=Config.PINECONE_EMBED_MODEL,
+                    inputs=window,
+                    parameters={"input_type": input_type, "truncate": "END"},
+                )
+                embeddings.extend([list(item["values"]) for item in result.data])
+        except Exception as e:
+            logger.exception("Pinecone embedding failed")
+            raise AIServiceUnavailable(
+                "The embedding service is temporarily unavailable. Please try again."
+            ) from e
 
         return embeddings
 

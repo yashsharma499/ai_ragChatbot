@@ -113,13 +113,32 @@ class Config:
     GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
 
     # ========================
-    # Embeddings (local MiniLM)
+    # Embeddings
     # ========================
-    EMBED_MODEL = os.getenv(
-        "EMBED_MODEL",
-        "sentence-transformers/all-MiniLM-L6-v2"
-    )
+    # "local"    - runs all-MiniLM-L6-v2 in-process via sentence-transformers.
+    #              Needs no API key, but pulls in torch: ~500MB of RSS and
+    #              ~800MB on disk, which does not fit a 512MB free host.
+    # "pinecone" - calls Pinecone's hosted embedding API using the Pinecone key
+    #              you already have. No torch, ~80MB RSS, fits a free tier.
+    EMBEDDING_BACKEND = os.getenv("EMBEDDING_BACKEND", "local").strip().lower()
+
+    EMBED_MODEL = os.getenv("EMBED_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
     EMBED_BATCH_SIZE = _get_int("EMBED_BATCH_SIZE", 32)
+
+    # Used only when EMBEDDING_BACKEND=pinecone. Produces 1024-dim vectors, so
+    # it needs its own index — a 384-dim index cannot store them.
+    PINECONE_EMBED_MODEL = os.getenv("PINECONE_EMBED_MODEL", "multilingual-e5-large")
+    # Pinecone caps hosted embedding requests at 96 inputs.
+    PINECONE_EMBED_BATCH = _get_int("PINECONE_EMBED_BATCH", 96)
+
+    @classmethod
+    def uses_local_embeddings(cls) -> bool:
+        return cls.EMBEDDING_BACKEND == "local"
+
+    @classmethod
+    def expected_dimension(cls) -> int:
+        """The vector width the configured backend produces."""
+        return 384 if cls.uses_local_embeddings() else 1024
 
     # ========================
     # Pinecone (Vector DB)

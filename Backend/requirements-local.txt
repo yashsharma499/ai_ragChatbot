@@ -1,0 +1,13 @@
+# Optional: run embeddings locally instead of calling Pinecone.
+# Needs EMBEDDING_BACKEND=local (the default).
+#
+#   pip install -r requirements.txt -r requirements-local.txt
+#
+# Adds roughly 800MB on disk and 450MB of RSS, because of torch. Use it for
+# development or on a host with more than 1GB of memory.
+#
+# On Linux, install the CPU build explicitly or pip pulls the CUDA wheels
+# (~2.5GB of nvidia-* packages):
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+sentence-transformers==5.2.3
